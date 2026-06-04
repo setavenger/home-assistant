@@ -194,61 +194,65 @@ actions:
           - condition: template
             value_template: "{{ is_dim_up_hold }}"
         sequence:
+          - action: light.turn_on
+            target: !input light_target
+            data:
+              brightness_step_pct: "{{ dim_step_pct | int }}"
+              transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
           - repeat:
               count: "{{ dim_repeat_count }}"
               sequence:
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop
+
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop_with_on_off
+
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_up_release
+
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_down_release
+
+                  timeout:
+                    milliseconds: !input dim_interval_ms
+                  continue_on_timeout: true
+
+                - condition: template
+                  value_template: "{{ not wait.completed }}"
+
                 - action: light.turn_on
                   target: !input light_target
                   data:
                     brightness_step_pct: "{{ dim_step_pct | int }}"
                     transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
 
-                - wait_for_trigger:
-                    - trigger: event
-                      event_type: zha_event
-                      event_data:
-                        device_id: !input remote_device
-                        command: stop
-
-                    - trigger: event
-                      event_type: zha_event
-                      event_data:
-                        device_id: !input remote_device
-                        command: stop_with_on_off
-
-                    - trigger: event
-                      event_type: zha_event
-                      event_data:
-                        device_id: !input remote_device
-                        command: move_up_release
-
-                    - trigger: event
-                      event_type: zha_event
-                      event_data:
-                        device_id: !input remote_device
-                        command: move_down_release
-
-                  timeout:
-                    milliseconds: !input dim_interval_ms
-                  continue_on_timeout: true
-
-                - condition: template
-                  value_template: "{{ not wait.completed }}"
-
       # Bottom hold: dim down
       - conditions:
           - condition: template
             value_template: "{{ is_dim_down_hold }}"
         sequence:
+          - action: light.turn_on
+            target: !input light_target
+            data:
+              brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
+              transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
           - repeat:
               count: "{{ dim_repeat_count }}"
               sequence:
-                - action: light.turn_on
-                  target: !input light_target
-                  data:
-                    brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
-                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
-
                 - wait_for_trigger:
                     - trigger: event
                       event_type: zha_event
@@ -280,6 +284,12 @@ actions:
 
                 - condition: template
                   value_template: "{{ not wait.completed }}"
+
+                - action: light.turn_on
+                  target: !input light_target
+                  data:
+                    brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
+                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
 
     default:
       - if:
