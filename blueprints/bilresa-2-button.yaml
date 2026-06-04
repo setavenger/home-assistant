@@ -1,0 +1,244 @@
+blueprint:
+  name: IKEA BILRESA ZHA - toggle, scene cycle, dimming
+  description: >
+    Reusable ZHA blueprint for the IKEA BILRESA two-button remote.
+    Top short press toggles a light or light group.
+    Bottom short press cycles scenes using an input_select helper.
+    Top hold dims up; bottom hold dims down.
+  domain: automation
+
+  input:
+    remote_device:
+      name: BILRESA remote
+      description: Select the IKEA BILRESA remote paired through ZHA.
+      selector:
+        device:
+          filter:
+            - integration: zha
+              manufacturer: IKEA of Sweden
+
+    light_target:
+      name: Target light or light group
+      description: The light entity/entities to toggle and dim.
+      selector:
+        target:
+          entity:
+            domain: light
+
+    scene_cycle_helper:
+      name: Scene cycle helper
+      description: >
+        An input_select helper whose options are scene entity IDs,
+        for example scene.living_room_warm_full_brightness.
+      selector:
+        entity:
+          filter:
+            - domain: input_select
+
+    toggle_transition_seconds:
+      name: Toggle transition
+      default: 0.5
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.1
+          unit_of_measurement: s
+          mode: slider
+
+    scene_transition_seconds:
+      name: Scene transition
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.5
+          unit_of_measurement: s
+          mode: slider
+
+    dim_step_pct:
+      name: Dimming step
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 25
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    dim_interval_ms:
+      name: Dimming repeat interval
+      default: 250
+      selector:
+        number:
+          min: 100
+          max: 1000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+
+    max_dim_seconds:
+      name: Maximum dimming duration
+      description: Safety stop if the release event is missed.
+      default: 8
+      selector:
+        number:
+          min: 2
+          max: 30
+          step: 1
+          unit_of_measurement: s
+          mode: slider
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote_device
+
+variables:
+  command: "{{ trigger.event.data.command | default('') }}"
+  cluster_id: "{{ trigger.event.data.cluster_id | default(-1) }}"
+  move_mode: "{{ trigger.event.data.params.move_mode | default(-1) }}"
+  scene_helper: !input scene_cycle_helper
+  dim_step_pct: !input dim_step_pct
+  dim_interval_ms: !input dim_interval_ms
+  max_dim_seconds: !input max_dim_seconds
+  toggle_transition_seconds: !input toggle_transition_seconds
+  scene_transition_seconds: !input scene_transition_seconds
+  dim_repeat_count: "{{ ((max_dim_seconds | float * 1000) / (dim_interval_ms | int)) | round(0, 'ceil') | int }}"
+
+actions:
+  - choose:
+      # Top short press: toggle light/group
+      - conditions:
+          - condition: template
+            value_template: "{{ command == 'on' }}"
+        sequence:
+          - action: light.toggle
+            target: !input light_target
+            data:
+              transition: "{{ toggle_transition_seconds }}"
+
+      # Bottom short press: cycle to next scene
+      - conditions:
+          - condition: template
+            value_template: "{{ command == 'off' }}"
+        sequence:
+          - variables:
+              current_scene: "{{ states(scene_helper) }}"
+              scene_options: "{{ state_attr(scene_helper, 'options') or [] }}"
+              next_scene: >-
+                {% set opts = state_attr(scene_helper, 'options') or [] %}
+                {% set cur = states(scene_helper) %}
+                {% if opts | length == 0 %}
+                  {{ '' }}
+                {% elif cur in opts %}
+                  {{ opts[(opts.index(cur) + 1) % (opts | length)] }}
+                {% else %}
+                  {{ opts[0] }}
+                {% endif %}
+          - condition: template
+            value_template: "{{ (next_scene | trim).startswith('scene.') }}"
+          - action: input_select.select_option
+            target:
+              entity_id: !input scene_cycle_helper
+            data:
+              option: "{{ next_scene | trim }}"
+          - action: scene.turn_on
+            target:
+              entity_id: "{{ next_scene | trim }}"
+            data:
+              transition: "{{ scene_transition_seconds }}"
+
+      # Top hold: dim up
+      - conditions:
+          - condition: template
+            value_template: >
+              {{
+                command in ['move', 'move_with_on_off']
+                and (move_mode | int(-1)) == 0
+              }}
+        sequence:
+          - repeat:
+              count: "{{ dim_repeat_count }}"
+              sequence:
+                - action: light.turn_on
+                  target: !input light_target
+                  data:
+                    brightness_step_pct: "{{ dim_step_pct | int }}"
+                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop_with_on_off
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_up_release
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_down_release
+                  timeout:
+                    milliseconds: !input dim_interval_ms
+                  continue_on_timeout: true
+                - condition: template
+                  value_template: "{{ not wait.completed }}"
+
+      # Bottom hold: dim down
+      - conditions:
+          - condition: template
+            value_template: >
+              {{
+                command in ['move', 'move_with_on_off']
+                and (move_mode | int(-1)) == 1
+              }}
+        sequence:
+          - repeat:
+              count: "{{ dim_repeat_count }}"
+              sequence:
+                - action: light.turn_on
+                  target: !input light_target
+                  data:
+                    brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
+                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop_with_on_off
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_up_release
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: move_down_release
+                  timeout:
+                    milliseconds: !input dim_interval_ms
+                  continue_on_timeout: true
+                - condition: template
+                  value_template: "{{ not wait.completed }}"
