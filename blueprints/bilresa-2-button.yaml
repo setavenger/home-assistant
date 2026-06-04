@@ -91,6 +91,15 @@ blueprint:
           unit_of_measurement: s
           mode: slider
 
+    debug_unhandled_events:
+      name: Debug unhandled events
+      description: >
+        Enable temporarily if you want notifications for BILRESA events
+        that the blueprint ignores.
+      default: false
+      selector:
+        boolean:
+
 mode: single
 max_exceeded: silent
 
@@ -99,46 +108,49 @@ triggers:
     event_type: zha_event
     event_data:
       device_id: !input remote_device
-      command: "on"
-  - trigger: event
-    event_type: zha_event
-    event_data:
-      device_id: !input remote_device
-      command: "off"
-  - trigger: event
-    event_type: zha_event
-    event_data:
-      device_id: !input remote_device
-      command: move
-  - trigger: event
-    event_type: zha_event
-    event_data:
-      device_id: !input remote_device
-      command: move_with_on_off
 
 variables:
   command: "{{ trigger.event.data.command | default('') }}"
-  cluster_id: "{{ trigger.event.data.cluster_id | default(-1) }}"
-  move_mode: >-
-    {% if 'move_mode' in (trigger.event.data.params or {}) %}
-      {{ trigger.event.data.params.move_mode | int }}
-    {% else %}
-      {{ -1 }}
-    {% endif %}
+  cluster_id: "{{ trigger.event.data.cluster_id | default(-1) | int }}"
+  endpoint_id: "{{ trigger.event.data.endpoint_id | default(-1) | int }}"
+  move_mode: "{{ trigger.event.data.params.move_mode | default(-1) | int }}"
+
   scene_helper: !input scene_cycle_helper
+  debug_unhandled_events: !input debug_unhandled_events
+
   dim_step_pct: !input dim_step_pct
   dim_interval_ms: !input dim_interval_ms
   max_dim_seconds: !input max_dim_seconds
   toggle_transition_seconds: !input toggle_transition_seconds
   scene_transition_seconds: !input scene_transition_seconds
-  dim_repeat_count: "{{ ((max_dim_seconds | float * 1000) / (dim_interval_ms | int)) | round(0, 'ceil') | int }}"
+
+  dim_repeat_count: >-
+    {{ ((max_dim_seconds | float * 1000) / (dim_interval_ms | int)) | round(0, 'ceil') | int }}
+
+  is_top_short: >-
+    {{ command == 'on' and cluster_id == 6 }}
+
+  is_bottom_short: >-
+    {{ command == 'off' and cluster_id == 6 }}
+
+  is_dim_up_hold: >-
+    {{
+      command in ['move', 'move_with_on_off']
+      and move_mode == 0
+    }}
+
+  is_dim_down_hold: >-
+    {{
+      command in ['move', 'move_with_on_off']
+      and move_mode == 1
+    }}
 
 actions:
   - choose:
-      # Top short press: toggle light/group
+      # Top short press: toggle target light/group
       - conditions:
           - condition: template
-            value_template: "{{ command == 'on' }}"
+            value_template: "{{ is_top_short }}"
         sequence:
           - action: light.toggle
             target: !input light_target
@@ -148,11 +160,9 @@ actions:
       # Bottom short press: cycle to next scene
       - conditions:
           - condition: template
-            value_template: "{{ command == 'off' }}"
+            value_template: "{{ is_bottom_short }}"
         sequence:
           - variables:
-              current_scene: "{{ states(scene_helper) }}"
-              scene_options: "{{ state_attr(scene_helper, 'options') or [] }}"
               next_scene: >-
                 {% set opts = state_attr(scene_helper, 'options') or [] %}
                 {% set cur = states(scene_helper) %}
@@ -163,13 +173,16 @@ actions:
                 {% else %}
                   {{ opts[0] }}
                 {% endif %}
+
           - condition: template
             value_template: "{{ (next_scene | trim).startswith('scene.') }}"
+
           - action: input_select.select_option
             target:
               entity_id: !input scene_cycle_helper
             data:
               option: "{{ next_scene | trim }}"
+
           - action: scene.turn_on
             target:
               entity_id: "{{ next_scene | trim }}"
@@ -179,11 +192,7 @@ actions:
       # Top hold: dim up
       - conditions:
           - condition: template
-            value_template: >
-              {{
-                command in ['move', 'move_with_on_off']
-                and (move_mode | int(-1)) == 0
-              }}
+            value_template: "{{ is_dim_up_hold }}"
         sequence:
           - repeat:
               count: "{{ dim_repeat_count }}"
@@ -193,41 +202,43 @@ actions:
                   data:
                     brightness_step_pct: "{{ dim_step_pct | int }}"
                     transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+
                 - wait_for_trigger:
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: stop
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: stop_with_on_off
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: move_up_release
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: move_down_release
+
                   timeout:
                     milliseconds: !input dim_interval_ms
                   continue_on_timeout: true
+
                 - condition: template
                   value_template: "{{ not wait.completed }}"
 
       # Bottom hold: dim down
       - conditions:
           - condition: template
-            value_template: >
-              {{
-                command in ['move', 'move_with_on_off']
-                and (move_mode | int(-1)) == 1
-              }}
+            value_template: "{{ is_dim_down_hold }}"
         sequence:
           - repeat:
               count: "{{ dim_repeat_count }}"
@@ -237,29 +248,50 @@ actions:
                   data:
                     brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
                     transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+
                 - wait_for_trigger:
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: stop
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: stop_with_on_off
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: move_up_release
+
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
                         command: move_down_release
+
                   timeout:
                     milliseconds: !input dim_interval_ms
                   continue_on_timeout: true
+
                 - condition: template
                   value_template: "{{ not wait.completed }}"
+
+    default:
+      - if:
+          - condition: template
+            value_template: "{{ debug_unhandled_events }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "Unhandled BILRESA event"
+              message: >-
+                command={{ command }},
+                cluster_id={{ cluster_id }},
+                endpoint_id={{ endpoint_id }},
+                params={{ trigger.event.data.params | default({}) }},
+                args={{ trigger.event.data.args | default([]) }}
