@@ -103,7 +103,7 @@ triggers:
 variables:
   command: "{{ trigger.event.data.command | default('') }}"
   cluster_id: "{{ trigger.event.data.cluster_id | default(-1) }}"
-  move_mode: "{{ trigger.event.data.params.move_mode | default(-1) }}"
+  move_mode: "{{ trigger.event.data.args | first | int(-1) }}"
   scene_helper: !input scene_cycle_helper
   dim_step_pct: !input dim_step_pct
   dim_interval_ms: !input dim_interval_ms
@@ -161,7 +161,7 @@ actions:
             value_template: >
               {{
                 command in ['move', 'move_with_on_off']
-                and (move_mode | int(-1)) == 0
+                and move_mode == 0
               }}
         sequence:
           - repeat:
@@ -205,7 +205,7 @@ actions:
             value_template: >
               {{
                 command in ['move', 'move_with_on_off']
-                and (move_mode | int(-1)) == 1
+                and move_mode == 1
               }}
         sequence:
           - repeat:
