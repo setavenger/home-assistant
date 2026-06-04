@@ -68,14 +68,17 @@ blueprint:
           unit_of_measurement: "%"
           mode: slider
 
-    dim_interval_ms:
-      name: Dimming repeat interval
-      default: 250
+    dim_hold_wait_ms:
+      name: Dim hold wait
+      description: >
+        Max time to wait for the next move repeat or a release while holding.
+        IKEA remotes typically repeat move about every 1 second.
+      default: 1500
       selector:
         number:
-          min: 100
-          max: 1000
-          step: 50
+          min: 500
+          max: 3000
+          step: 100
           unit_of_measurement: ms
           mode: slider
 
@@ -119,13 +122,15 @@ variables:
   debug_unhandled_events: !input debug_unhandled_events
 
   dim_step_pct: !input dim_step_pct
-  dim_interval_ms: !input dim_interval_ms
+  dim_hold_wait_ms: !input dim_hold_wait_ms
   max_dim_seconds: !input max_dim_seconds
   toggle_transition_seconds: !input toggle_transition_seconds
   scene_transition_seconds: !input scene_transition_seconds
 
   dim_repeat_count: >-
-    {{ ((max_dim_seconds | float * 1000) / (dim_interval_ms | int)) | round(0, 'ceil') | int }}
+    {{ ((max_dim_seconds | float * 1000) / (dim_hold_wait_ms | int)) | round(0, 'ceil') | int }}
+  dim_transition_seconds: >-
+    {{ [((dim_hold_wait_ms | int) / 1000 * 0.85), 0.3] | max | round(2) }}
 
   is_top_short: >-
     {{ command == 'on' and cluster_id == 6 }}
@@ -189,7 +194,7 @@ actions:
             data:
               transition: "{{ scene_transition_seconds }}"
 
-      # Top hold: dim up
+      # Top hold: dim up (steps on each move repeat; stops on release or timeout)
       - conditions:
           - condition: template
             value_template: "{{ is_dim_up_hold }}"
@@ -198,7 +203,7 @@ actions:
             target: !input light_target
             data:
               brightness_step_pct: "{{ dim_step_pct | int }}"
-              transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+              transition: "{{ dim_transition_seconds }}"
           - repeat:
               count: "{{ dim_repeat_count }}"
               sequence:
@@ -207,13 +212,13 @@ actions:
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
-                        command: stop
+                        command: move
 
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
-                        command: stop_with_on_off
+                        command: move_with_on_off
 
                     - trigger: event
                       event_type: zha_event
@@ -227,20 +232,31 @@ actions:
                         device_id: !input remote_device
                         command: move_down_release
 
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop_with_on_off
+
                   timeout:
-                    milliseconds: !input dim_interval_ms
-                  continue_on_timeout: true
+                    milliseconds: !input dim_hold_wait_ms
+                  continue_on_timeout: false
 
                 - condition: template
-                  value_template: "{{ not wait.completed }}"
+                  value_template: >-
+                    {{
+                      wait.completed
+                      and wait.trigger.event.data.command in ['move', 'move_with_on_off']
+                      and (wait.trigger.event.data.params.move_mode | default(-1) | int) == 0
+                    }}
 
                 - action: light.turn_on
                   target: !input light_target
                   data:
                     brightness_step_pct: "{{ dim_step_pct | int }}"
-                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+                    transition: "{{ dim_transition_seconds }}"
 
-      # Bottom hold: dim down
+      # Bottom hold: dim down (steps on each move repeat; stops on release or timeout)
       - conditions:
           - condition: template
             value_template: "{{ is_dim_down_hold }}"
@@ -249,7 +265,7 @@ actions:
             target: !input light_target
             data:
               brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
-              transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+              transition: "{{ dim_transition_seconds }}"
           - repeat:
               count: "{{ dim_repeat_count }}"
               sequence:
@@ -258,13 +274,13 @@ actions:
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
-                        command: stop
+                        command: move
 
                     - trigger: event
                       event_type: zha_event
                       event_data:
                         device_id: !input remote_device
-                        command: stop_with_on_off
+                        command: move_with_on_off
 
                     - trigger: event
                       event_type: zha_event
@@ -278,18 +294,29 @@ actions:
                         device_id: !input remote_device
                         command: move_down_release
 
+                    - trigger: event
+                      event_type: zha_event
+                      event_data:
+                        device_id: !input remote_device
+                        command: stop_with_on_off
+
                   timeout:
-                    milliseconds: !input dim_interval_ms
-                  continue_on_timeout: true
+                    milliseconds: !input dim_hold_wait_ms
+                  continue_on_timeout: false
 
                 - condition: template
-                  value_template: "{{ not wait.completed }}"
+                  value_template: >-
+                    {{
+                      wait.completed
+                      and wait.trigger.event.data.command in ['move', 'move_with_on_off']
+                      and (wait.trigger.event.data.params.move_mode | default(-1) | int) == 1
+                    }}
 
                 - action: light.turn_on
                   target: !input light_target
                   data:
                     brightness_step_pct: "{{ 0 - (dim_step_pct | int) }}"
-                    transition: "{{ ((dim_interval_ms | int) / 1000) | round(2) }}"
+                    transition: "{{ dim_transition_seconds }}"
 
     default:
       - if:
